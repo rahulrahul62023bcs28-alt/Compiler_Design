@@ -1,0 +1,67 @@
+Enter the number of quadruples: 9
+Format: Operator Operand-1 Operand-2 Result
+Use --- for an unused operand. Temporaries: t1, t2, ...
+Control operators: ifFalse, ifTrue, goto, label
+Enter the quadruple [0]: < a b t1
+Enter the quadruple [1]: = 5 --- a
+Enter the quadruple [2]: * 3 2 t2
+Enter the quadruple [3]: < a b t3
+Enter the quadruple [4]: + x y t4
+Enter the quadruple [5]: + x y t5
+Enter the quadruple [6]: = t5 --- ans
+Enter the quadruple [7]: ifFalse 1 --- L1
+Enter the quadruple [8]: label --- --- L1
+
+TAC in Quadruples
+RI      OP              O1      O2      RES
+0       <               a       b       t1
+1       =               5       ---     a
+2       *               3       2       t2
+3       <               a       b       t3
+4       +               x       y       t4
+5       +               x       y       t5
+6       =               t5      ---     ans
+7       ifFalse         1       ---     L1
+8       label           ---     ---     L1
+
+After Common Subexpression Elimination
+RI      OP              O1      O2      RES
+0       <               a       b       t1
+1       =               5       ---     a
+2       *               3       2       t2
+3       <               a       b       t3
+4       +               x       y       t4
+5       =               t4      ---     ans
+6       ifFalse         1       ---     L1
+7       label           ---     ---     L1
+
+After Copy Propagation
+RI      OP              O1      O2      RES
+0       <               a       b       t1
+1       *               3       2       t2
+2       <               5       b       t3
+3       +               x       y       t4
+4       =               t4      ---     ans
+5       ifFalse         1       ---     L1
+6       label           ---     ---     L1
+
+After Constant Folding
+RI      OP              O1      O2      RES
+0       <               a       b       t1
+1       =               6       ---     t2
+2       <               5       b       t3
+3       +               x       y       t4
+4       =               t4      ---     ans
+5       ifFalse         1       ---     L1
+6       label           ---     ---     L1
+
+After Dead Code Elimination
+RI      OP              O1      O2      RES
+0       <               a       b       t1
+1       =               6       ---     t2
+2       <               5       b       t3
+3       +               x       y       t4
+4       =               t4      ---     ans
+5       label           ---     ---     L1
+
+

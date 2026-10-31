@@ -1,0 +1,5 @@
+t1 = a + b
+if (t1 < c) goto L1
+t2 = x + y
+t3 = x + y
+L1: a = t3

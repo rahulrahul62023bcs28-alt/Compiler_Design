@@ -1,0 +1,712 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <limits.h>
+#define MAX_QUADS 100
+struct quadruple
+{
+    char result[32];
+    char operator[2];
+    char operand1[32];
+    char operand2[32];
+};
+void display(struct quadruple *q, int n)
+{
+    int i;
+    printf("RI\tOP\tO1\tO2\tRES\n");
+    for(i = 0; i < n; i++)
+        printf("%d\t%s\t%s\t%s\t%s\n", i, q[i].operator,
+               q[i].operand1, q[i].operand2, q[i].result);
+}
+int readNumber(const char *text, int *value)
+{
+    char *end;
+    long number;
+    errno = 0;
+    number = strtol(text, &end, 10);
+    if(errno || end == text || *end != '\0' ||
+       number < INT_MIN || number > INT_MAX)
+        return 0;
+    *value = (int)number;
+    return 1;
+}
+void applyConstantFolding(struct quadruple *q, int n)
+{
+    int i, j, a, b; long long value;
+    for(i = 0; i < n; i++)
+    {
+        if(readNumber(q[i].operand1, &a) && readNumber(q[i].operand2, &b))
+        {
+            switch(q[i].operator[0])
+            {
+                case '+': value = (long long)a + b; break;
+                case '-': value = (long long)a - b; break;
+                case '*': value = (long long)a * b; break;
+                case '/':
+                    if(b == 0 || (a == INT_MIN && b == -1))
+                        continue;
+                    value = a / b;
+                    break;
+                default: continue;
+            }
+            if(value < INT_MIN || value > INT_MAX)
+                continue;
+            snprintf(q[i].operand1, sizeof(q[i].operand1), "%lld", value);
+            strcpy(q[i].operand2, "---");
+            strcpy(q[i].operator, "=");
+        }
+        if(strcmp(q[i].operator, "=") != 0 ||
+           !readNumber(q[i].operand1, &a))
+            continue;
+        for(j = i + 1; j < n; j++)
+        {
+            if(strcmp(q[j].operand1, q[i].result) == 0)
+                strcpy(q[j].operand1, q[i].operand1);
+            if(strcmp(q[j].operand2, q[i].result) == 0)
+                strcpy(q[j].operand2, q[i].operand1);
+            if(strcmp(q[j].result, q[i].result) == 0)
+                break;
+        }
+    }
+}
+
+/* Checks that every later use of 'dup' can safely be renamed to 'keep'
+   (i.e. 'keep' is not overwritten before 'dup' is last used). */
+int canReplace(struct quadruple *q, int n, int j, const char *keep, const char *dup)
+{
+    int m, keepChanged = 0;
+    for(m = j + 1; m < n; m++)
+    {
+        if((strcmp(q[m].operand1, dup) == 0 || strcmp(q[m].operand2, dup) == 0)
+           && keepChanged)
+            return 0;
+        if(strcmp(q[m].result, dup) == 0)
+            break;
+        if(strcmp(q[m].result, keep) == 0)
+            keepChanged = 1;
+    }
+    return 1;
+}
+
+/* Common Subexpression Elimination:
+   t1 = a + b
+   t2 = a + b   -->  this statement is removed and every later use of t2
+                     is replaced by t1. */
+void eliminate(struct quadruple *q, int *n)
+{
+    int i, j, k, m;
+    for(i = 0; i < *n - 1; i++)
+    {
+        if(strcmp(q[i].operand2, "---") == 0 ||
+           strcmp(q[i].result, q[i].operand1) == 0 ||
+           strcmp(q[i].result, q[i].operand2) == 0)
+            continue;
+
+        for(j = i + 1; j < *n; j++)
+        {
+            if(strcmp(q[i].operand1, q[j].operand1) != 0 ||
+               strcmp(q[i].operand2, q[j].operand2) != 0 ||
+               strcmp(q[i].operator, q[j].operator) != 0)
+                continue;
+
+            /* result or operands of quad i changed in between? */
+            int changed = 0;
+            for(k = i + 1; k < j; k++)
+            {
+                if(strcmp(q[i].result, q[k].result) == 0 ||
+                   strcmp(q[i].operand1, q[k].result) == 0 ||
+                   strcmp(q[i].operand2, q[k].result) == 0)
+                    changed = 1;
+            }
+            if(changed)
+                break;
+            if(strcmp(q[j].result, q[i].result) == 0)
+                continue;
+
+            if(q[j].result[0] == 't' &&
+               canReplace(q, *n, j, q[i].result, q[j].result))
+            {
+                /* temporary: replace its later uses with t1, delete quad j */
+                char dup[32];
+                strcpy(dup, q[j].result);
+                for(m = j + 1; m < *n; m++)
+                {
+                    if(strcmp(q[m].operand1, dup) == 0)
+                        strcpy(q[m].operand1, q[i].result);
+                    if(strcmp(q[m].operand2, dup) == 0)
+                        strcpy(q[m].operand2, q[i].result);
+                    if(strcmp(q[m].result, dup) == 0 ||
+                       strcmp(q[m].result, q[i].result) == 0)
+                        break;
+                }
+                for(k = j; k < *n - 1; k++)
+                    q[k] = q[k + 1];
+                (*n)--;
+                j--;
+            }
+            else
+            {
+                /* user variable (e.g. x = a + b): keep it as x = t1 */
+                strcpy(q[j].operand1, q[i].result);
+                strcpy(q[j].operand2, "---");
+                strcpy(q[j].operator, "=");
+            }
+        }
+    }
+}
+void applyCopyPropagation(struct quadruple *q, int n)
+{
+    int i, j;
+    for(i = 0; i < n; i++)
+    {
+        if(strcmp(q[i].operator, "=") == 0)
+        {
+            for(j = i + 1; j < n; j++) {
+                if(strcmp(q[j].operand1, q[i].result) == 0)
+                {
+                    strcpy(q[j].operand1, q[i].operand1);
+                }
+                if(strcmp(q[j].operand2, q[i].result) == 0)
+                {
+                    strcpy(q[j].operand2, q[i].operand1);
+                }
+                if(strcmp(q[j].result, q[i].result) == 0 ||
+                   strcmp(q[j].result, q[i].operand1) == 0)
+                    break;
+            }
+        }
+    }
+}
+void applyDeadCodeElimination(struct quadruple *q, int *n)
+{
+    int i, j, used;
+    for(i = *n - 1; i >= 0; i--)
+    {
+        used = 0;
+        for(j = i + 1; j < *n; j++)
+        {
+            if(strcmp(q[i].result, q[j].operand1) == 0 ||
+               strcmp(q[i].result, q[j].operand2) == 0)
+            {
+                used = 1;
+                break;
+            }
+            if(strcmp(q[i].result, q[j].result) == 0)
+                break;
+        }
+        if(used == 0 && q[i].result[0] == 't')
+        {
+            for(j = i; j < *n - 1; j++) {
+                q[j] = q[j + 1];
+            }
+            (*n)--;
+        }
+    }
+}
+int main(void)
+{
+    struct quadruple quad[MAX_QUADS];
+    int n, i;
+    printf("Enter the number of quadruples: ");
+    if(scanf("%d", &n) != 1 || n < 1 || n > MAX_QUADS)
+    {
+        fprintf(stderr, "Enter a number from 1 to %d.\n", MAX_QUADS);
+        return 1;
+    }
+    printf("Format: Operator Operand-1 Operand-2 Result\n");
+    printf("Use --- for an unused operand; names beginning with t are temporary.\n");
+    for(i = 0; i < n; i++)
+    {
+        printf("Enter the quadruple [%d]: ", i);
+        if(scanf("%1s %31s %31s %31s", quad[i].operator,
+                 quad[i].operand1, quad[i].operand2, quad[i].result) != 4)
+        {
+            fprintf(stderr, "Invalid quadruple.\n");
+            return 1;
+        }
+        if(strchr("=+-*/", quad[i].operator[0]) == NULL)
+        {
+            fprintf(stderr, "Supported operators: = + - * /\n");
+            return 1;
+        }
+    }
+    printf("\nTAC in Quadruples\n");
+    display(quad, n);
+    eliminate(quad, &n);
+    printf("\nAfter Common Subexpression Elimination\n");
+    display(quad, n);
+    applyConstantFolding(quad, n);
+    printf("\nAfter Constant Folding\n");
+    display(quad, n);
+    applyCopyPropagation(quad, n);
+    printf("\nAfter Copy Propagation\n");
+    display(quad, n);
+    applyDeadCodeElimination(quad, &n);
+    printf("\nAfter Dead Code Elimination\n");
+    display(quad, n);
+    return 0;
+}
+
+[24bcs181@mepcolinux EX7]$cc tac.c
+[24bcs181@mepcolinux EX7]$./a.out
+Enter the number of quadruples: 8
+Format: Operator Operand-1 Operand-2 Result
+Use --- for an unused operand; names beginning with t are temporary.
+Enter the quadruple [0]: + a b t1
+Enter the quadruple [1]: + a b t2
+Enter the quadruple [2]: + 2 3 t3
+Enter the quadruple [3]: * t3 4 t4
+Enter the quadruple [4]: = t2 --- x
+Enter the quadruple [5]: = t4 --- y
+Enter the quadruple [6]: + p q t5
+Enter the quadruple [7]: = x --- z
+
+TAC in Quadruples
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       +       a       b       t2
+2       +       2       3       t3
+3       *       t3      4       t4
+4       =       t2      ---     x
+5       =       t4      ---     y
+6       +       p       q       t5
+7       =       x       ---     z
+
+After Common Subexpression Elimination
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       +       2       3       t3
+2       *       t3      4       t4
+3       =       t1      ---     x
+4       =       t4      ---     y
+5       +       p       q       t5
+6       =       x       ---     z
+
+After Constant Folding
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       =       5       ---     t3
+2       =       20      ---     t4
+3       =       t1      ---     x
+4       =       20      ---     y
+5       +       p       q       t5
+6       =       x       ---     z
+
+After Copy Propagation
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       =       5       ---     t3
+2       =       20      ---     t4
+3       =       t1      ---     x
+4       =       20      ---     y
+5       +       p       q       t5
+6       =       t1      ---     z
+
+After Dead Code Elimination
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       =       t1      ---     x
+2       =       20      ---     y
+3       =       t1      ---     z
+
+
+[24bcs181@mepcolinux EXP7]$cc tac.c
+[24bcs181@mepcolinux EXP7]$./a.out
+Enter the number of quadruples: 5
+Format: Operator Operand-1 Operand-2 Result
+Use --- for an unused operand; names beginning with t are temporary.
+Enter the quadruple [0]: = 3 --- a
+Enter the quadruple [1]: + a b t1
+Enter the quadruple [2]: = 5 --- a
+Enter the quadruple [3]: + a b t2
+Enter the quadruple [4]: = t2 --- x
+
+TAC in Quadruples
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       +       a       b       t1
+2       =       5       ---     a
+3       +       a       b       t2
+4       =       t2      ---     x
+
+After Common Subexpression Elimination
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       +       a       b       t1
+2       =       5       ---     a
+3       +       a       b       t2
+4       =       t2      ---     x
+
+After Constant Folding
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       +       3       b       t1
+2       =       5       ---     a
+3       +       5       b       t2
+4       =       t2      ---     x#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <limits.h>
+#define MAX_QUADS 100
+struct quadruple
+{
+    char result[32];
+    char operator[2];
+    char operand1[32];
+    char operand2[32];
+};
+void display(struct quadruple *q, int n)
+{
+    int i;
+    printf("RI\tOP\tO1\tO2\tRES\n");
+    for(i = 0; i < n; i++)
+        printf("%d\t%s\t%s\t%s\t%s\n", i, q[i].operator,
+               q[i].operand1, q[i].operand2, q[i].result);
+}
+int readNumber(const char *text, int *value)
+{
+    char *end;
+    long number;
+    errno = 0;
+    number = strtol(text, &end, 10);
+    if(errno || end == text || *end != '\0' ||
+       number < INT_MIN || number > INT_MAX)
+        return 0;
+    *value = (int)number;
+    return 1;
+}
+void applyConstantFolding(struct quadruple *q, int n)
+{
+    int i, j, a, b; long long value;
+    for(i = 0; i < n; i++)
+    {
+        if(readNumber(q[i].operand1, &a) && readNumber(q[i].operand2, &b))
+        {
+            switch(q[i].operator[0])
+            {
+                case '+': value = (long long)a + b; break;
+                case '-': value = (long long)a - b; break;
+                case '*': value = (long long)a * b; break;
+                case '/':
+                    if(b == 0 || (a == INT_MIN && b == -1))
+                        continue;
+                    value = a / b;
+                    break;
+                default: continue;
+            }
+            if(value < INT_MIN || value > INT_MAX)
+                continue;
+            snprintf(q[i].operand1, sizeof(q[i].operand1), "%lld", value);
+            strcpy(q[i].operand2, "---");
+            strcpy(q[i].operator, "=");
+        }
+        if(strcmp(q[i].operator, "=") != 0 ||
+           !readNumber(q[i].operand1, &a))
+            continue;
+        for(j = i + 1; j < n; j++)
+        {
+            if(strcmp(q[j].operand1, q[i].result) == 0)
+                strcpy(q[j].operand1, q[i].operand1);
+            if(strcmp(q[j].operand2, q[i].result) == 0)
+                strcpy(q[j].operand2, q[i].operand1);
+            if(strcmp(q[j].result, q[i].result) == 0)
+                break;
+        }
+    }
+}
+
+/* Checks that every later use of 'dup' can safely be renamed to 'keep'
+   (i.e. 'keep' is not overwritten before 'dup' is last used). */
+int canReplace(struct quadruple *q, int n, int j, const char *keep, const char *dup)
+{
+    int m, keepChanged = 0;
+    for(m = j + 1; m < n; m++)
+    {
+        if((strcmp(q[m].operand1, dup) == 0 || strcmp(q[m].operand2, dup) == 0)
+           && keepChanged)
+            return 0;
+        if(strcmp(q[m].result, dup) == 0)
+            break;
+        if(strcmp(q[m].result, keep) == 0)
+            keepChanged = 1;
+    }
+    return 1;
+}
+
+/* Common Subexpression Elimination:
+   t1 = a + b
+   t2 = a + b   -->  this statement is removed and every later use of t2
+                     is replaced by t1. */
+void eliminate(struct quadruple *q, int *n)
+{
+    int i, j, k, m;
+    for(i = 0; i < *n - 1; i++)
+    {
+        if(strcmp(q[i].operand2, "---") == 0 ||
+           strcmp(q[i].result, q[i].operand1) == 0 ||
+           strcmp(q[i].result, q[i].operand2) == 0)
+            continue;
+
+        for(j = i + 1; j < *n; j++)
+        {
+            if(strcmp(q[i].operand1, q[j].operand1) != 0 ||
+               strcmp(q[i].operand2, q[j].operand2) != 0 ||
+               strcmp(q[i].operator, q[j].operator) != 0)
+                continue;
+
+            /* result or operands of quad i changed in between? */
+            int changed = 0;
+            for(k = i + 1; k < j; k++)
+            {
+                if(strcmp(q[i].result, q[k].result) == 0 ||
+                   strcmp(q[i].operand1, q[k].result) == 0 ||
+                   strcmp(q[i].operand2, q[k].result) == 0)
+                    changed = 1;
+            }
+            if(changed)
+                break;
+            if(strcmp(q[j].result, q[i].result) == 0)
+                continue;
+
+            if(q[j].result[0] == 't' &&
+               canReplace(q, *n, j, q[i].result, q[j].result))
+            {
+                /* temporary: replace its later uses with t1, delete quad j */
+                char dup[32];
+                strcpy(dup, q[j].result);
+                for(m = j + 1; m < *n; m++)
+                {
+                    if(strcmp(q[m].operand1, dup) == 0)
+                        strcpy(q[m].operand1, q[i].result);
+                    if(strcmp(q[m].operand2, dup) == 0)
+                        strcpy(q[m].operand2, q[i].result);
+                    if(strcmp(q[m].result, dup) == 0 ||
+                       strcmp(q[m].result, q[i].result) == 0)
+                        break;
+                }
+                for(k = j; k < *n - 1; k++)
+                    q[k] = q[k + 1];
+                (*n)--;
+                j--;
+            }
+            else
+            {
+                /* user variable (e.g. x = a + b): keep it as x = t1 */
+                strcpy(q[j].operand1, q[i].result);
+                strcpy(q[j].operand2, "---");
+                strcpy(q[j].operator, "=");
+            }
+        }
+    }
+}
+void applyCopyPropagation(struct quadruple *q, int n)
+{
+    int i, j;
+    for(i = 0; i < n; i++)
+    {
+        if(strcmp(q[i].operator, "=") == 0)
+        {
+            for(j = i + 1; j < n; j++) {
+                if(strcmp(q[j].operand1, q[i].result) == 0)
+                {
+                    strcpy(q[j].operand1, q[i].operand1);
+                }
+                if(strcmp(q[j].operand2, q[i].result) == 0)
+                {
+                    strcpy(q[j].operand2, q[i].operand1);
+                }
+                if(strcmp(q[j].result, q[i].result) == 0 ||
+                   strcmp(q[j].result, q[i].operand1) == 0)
+                    break;
+            }
+        }
+    }
+}
+void applyDeadCodeElimination(struct quadruple *q, int *n)
+{
+    int i, j, used;
+    for(i = *n - 1; i >= 0; i--)
+    {
+        used = 0;
+        for(j = i + 1; j < *n; j++)
+        {
+            if(strcmp(q[i].result, q[j].operand1) == 0 ||
+               strcmp(q[i].result, q[j].operand2) == 0)
+            {
+                used = 1;
+                break;
+            }
+            if(strcmp(q[i].result, q[j].result) == 0)
+                break;
+        }
+        if(used == 0 && q[i].result[0] == 't')
+        {
+            for(j = i; j < *n - 1; j++) {
+                q[j] = q[j + 1];
+            }
+            (*n)--;
+        }
+    }
+}
+int main(void)
+{
+    struct quadruple quad[MAX_QUADS];
+    int n, i;
+    printf("Enter the number of quadruples: ");
+    if(scanf("%d", &n) != 1 || n < 1 || n > MAX_QUADS)
+    {
+        fprintf(stderr, "Enter a number from 1 to %d.\n", MAX_QUADS);
+        return 1;
+    }
+    printf("Format: Operator Operand-1 Operand-2 Result\n");
+    printf("Use --- for an unused operand; names beginning with t are temporary.\n");
+    for(i = 0; i < n; i++)
+    {
+        printf("Enter the quadruple [%d]: ", i);
+        if(scanf("%1s %31s %31s %31s", quad[i].operator,
+                 quad[i].operand1, quad[i].operand2, quad[i].result) != 4)
+        {
+            fprintf(stderr, "Invalid quadruple.\n");
+            return 1;
+        }
+        if(strchr("=+-*/", quad[i].operator[0]) == NULL)
+        {
+            fprintf(stderr, "Supported operators: = + - * /\n");
+            return 1;
+        }
+    }
+    printf("\nTAC in Quadruples\n");
+    display(quad, n);
+    eliminate(quad, &n);
+    printf("\nAfter Common Subexpression Elimination\n");
+    display(quad, n);
+    applyConstantFolding(quad, n);
+    printf("\nAfter Constant Folding\n");
+    display(quad, n);
+    applyCopyPropagation(quad, n);
+    printf("\nAfter Copy Propagation\n");
+    display(quad, n);
+    applyDeadCodeElimination(quad, &n);
+    printf("\nAfter Dead Code Elimination\n");
+    display(quad, n);
+    return 0;
+}
+
+[24bcs181@mepcolinux EX7]$cc tac.c
+[24bcs181@mepcolinux EX7]$./a.out
+Enter the number of quadruples: 8
+Format: Operator Operand-1 Operand-2 Result
+Use --- for an unused operand; names beginning with t are temporary.
+Enter the quadruple [0]: + a b t1
+Enter the quadruple [1]: + a b t2
+Enter the quadruple [2]: + 2 3 t3
+Enter the quadruple [3]: * t3 4 t4
+Enter the quadruple [4]: = t2 --- x
+Enter the quadruple [5]: = t4 --- y
+Enter the quadruple [6]: + p q t5
+Enter the quadruple [7]: = x --- z
+
+TAC in Quadruples
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       +       a       b       t2
+2       +       2       3       t3
+3       *       t3      4       t4
+4       =       t2      ---     x
+5       =       t4      ---     y
+6       +       p       q       t5
+7       =       x       ---     z
+
+After Common Subexpression Elimination
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       +       2       3       t3
+2       *       t3      4       t4
+3       =       t1      ---     x
+4       =       t4      ---     y
+5       +       p       q       t5
+6       =       x       ---     z
+
+After Constant Folding
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       =       5       ---     t3
+2       =       20      ---     t4
+3       =       t1      ---     x
+4       =       20      ---     y
+5       +       p       q       t5
+6       =       x       ---     z
+
+After Copy Propagation
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       =       5       ---     t3
+2       =       20      ---     t4
+3       =       t1      ---     x
+4       =       20      ---     y
+5       +       p       q       t5
+6       =       t1      ---     z
+
+After Dead Code Elimination
+RI      OP      O1      O2      RES
+0       +       a       b       t1
+1       =       t1      ---     x
+2       =       20      ---     y
+3       =       t1      ---     z
+
+
+[24bcs181@mepcolinux EXP7]$cc tac.c
+[24bcs181@mepcolinux EXP7]$./a.out
+Enter the number of quadruples: 5
+Format: Operator Operand-1 Operand-2 Result
+Use --- for an unused operand; names beginning with t are temporary.
+Enter the quadruple [0]: = 3 --- a
+Enter the quadruple [1]: + a b t1
+Enter the quadruple [2]: = 5 --- a
+Enter the quadruple [3]: + a b t2
+Enter the quadruple [4]: = t2 --- x
+
+TAC in Quadruples
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       +       a       b       t1
+2       =       5       ---     a
+3       +       a       b       t2
+4       =       t2      ---     x
+
+After Common Subexpression Elimination
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       +       a       b       t1
+2       =       5       ---     a
+3       +       a       b       t2
+4       =       t2      ---     x
+
+After Constant Folding
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       +       3       b       t1
+2       =       5       ---     a
+3       +       5       b       t2
+4       =       t2      ---     x
+
+After Copy Propagation
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       +       3       b       t1
+2       =       5       ---     a
+3       +       5       b       t2
+4       =       t2      ---     x
+
+After Dead Code Elimination
+RI      OP      O1      O2      RES
+0       =       3       ---     a
+1       =       5       ---     a
+2       +       5       b       t2
+3       =       t2      ---     x
+
+[24bcs181@mepcolinux EX7]$exit
+
+
